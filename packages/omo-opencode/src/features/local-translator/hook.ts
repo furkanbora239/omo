@@ -1,5 +1,6 @@
 import type { Message, Part } from "@opencode-ai/sdk"
 import { isRealUserMessage, isRealUserTextPart, log } from "../../shared"
+import { AUTO_SLASH_COMMAND_TAG_OPEN } from "../../hooks/auto-slash-command/constants"
 import { getMainSessionID, subagentSessions, syncSubagentSessions } from "../claude-code-session-state"
 import type { TranslationConfig, TranslationConfigInput } from "./types"
 import { DEFAULT_TRANSLATION_CONFIG } from "./types"
@@ -185,7 +186,8 @@ export function createLocalTranslatorHook(
           isRealUserTextPart(part) &&
           "text" in part &&
           typeof part.text === "string" &&
-          part.text.length > 0,
+          part.text.length > 0 &&
+          !part.text.includes(AUTO_SLASH_COMMAND_TAG_OPEN),
       )
       if (textPartIndex === -1) return
 

@@ -5,6 +5,10 @@ import { join } from "node:path"
 import type { Message, Part } from "@opencode-ai/sdk"
 import { _resetForTesting, setMainSession, subagentSessions, syncSubagentSessions } from "../claude-code-session-state"
 import { createInternalAgentTextPart } from "../../shared/internal-initiator-marker"
+import {
+  AUTO_SLASH_COMMAND_TAG_CLOSE,
+  AUTO_SLASH_COMMAND_TAG_OPEN,
+} from "../../hooks/auto-slash-command/constants"
 import { createLocalTranslatorHook } from "./hook"
 
 const originalFetch = globalThis.fetch
@@ -18,6 +22,18 @@ function makeUserMessage(text: string, sessionID = "s1") {
       time: { created: 1 },
     } as unknown as Message,
     parts: [{ type: "text", text } as unknown as Part],
+  }
+}
+
+function makeUserMessageWithParts(parts: Part[], sessionID = "s1") {
+  return {
+    info: {
+      id: "m1",
+      sessionID,
+      role: "user",
+      time: { created: 1 },
+    } as unknown as Message,
+    parts,
   }
 }
 
@@ -368,5 +384,124 @@ describe("local-translator hook", () => {
     expect((output.messages[0].parts[0] as { text: string }).text).toBe(
       "bu parent oturumu olan bir cocuk oturum gorevidir ve cevrilmemelidir",
     )
+  })
+
+  it("#given a text part containing the auto-slash-command open tag #when transform runs #then translation is not invoked and text is unchanged", async () => {
+    process.env["GOOGLE_API_KEY"] = "test-key"
+    let fetchCalled = false
+    globalThis.fetch = (async () => {
+      fetchCalled = true
+      return new Response("{}", { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      const hook = createLocalTranslatorHook({
+        enabled: true,
+        mode: "cloud",
+        logTranslations: false,
+      })
+      const taggedText = `${AUTO_SLASH_COMMAND_TAG_OPEN}\ntemplate body\n${AUTO_SLASH_COMMAND_TAG_CLOSE}`
+      const output = { messages: [makeUserMessage(taggedText)] }
+
+      await hook["experimental.chat.messages.transform"]({}, output)
+
+      expect(fetchCalled).toBe(false)
+      expect((output.messages[0].parts[0] as { text: string }).text).toBe(taggedText)
+      expect((output.messages[0].parts[0] as { text: string }).text).toContain(
+        AUTO_SLASH_COMMAND_TAG_OPEN,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      delete process.env["GOOGLE_API_KEY"]
+    }
+  })
+
+  it("#given tagged template and plain prose parts #when transform runs #then only the prose part is translated", async () => {
+    process.env["GOOGLE_API_KEY"] = "test-key"
+    const fetchBodies: string[] = []
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      fetchBodies.push(init?.body ?? "")
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: "COMPRESSED_EN" }],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const hook = createLocalTranslatorHook({
+        enabled: true,
+        mode: "cloud",
+        logTranslations: false,
+      })
+      const taggedText = `${AUTO_SLASH_COMMAND_TAG_OPEN}\ntemplate body\n${AUTO_SLASH_COMMAND_TAG_CLOSE}`
+      const proseText = "bu uzun kullanici mesaji ingilizceye cevrilmelidir"
+      const output = {
+        messages: [
+          makeUserMessageWithParts([
+            { type: "text", text: taggedText } as unknown as Part,
+            { type: "text", text: proseText } as unknown as Part,
+          ]),
+        ],
+      }
+
+      await hook["experimental.chat.messages.transform"]({}, output)
+
+      expect((output.messages[0].parts[0] as { text: string }).text).toBe(taggedText)
+      expect((output.messages[0].parts[0] as { text: string }).text).toContain(
+        AUTO_SLASH_COMMAND_TAG_OPEN,
+      )
+      expect((output.messages[0].parts[1] as { text: string }).text).toBe("COMPRESSED_EN")
+      expect(fetchBodies.length).toBe(1)
+      expect(fetchBodies[0]).toContain(proseText)
+      expect(fetchBodies[0]).not.toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
+    } finally {
+      globalThis.fetch = originalFetch
+      delete process.env["GOOGLE_API_KEY"]
+    }
+  })
+
+  it("#given a plain prose part with no tags #when transform runs #then translation is still invoked", async () => {
+    process.env["GOOGLE_API_KEY"] = "test-key"
+    let fetchCalled = false
+    globalThis.fetch = (async () => {
+      fetchCalled = true
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: "COMPRESSED_EN" }],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const hook = createLocalTranslatorHook({
+        enabled: true,
+        mode: "cloud",
+        logTranslations: false,
+      })
+      const proseText = "bu duz kullanici metni etiketsizdir ve cevrilmelidir"
+      const output = { messages: [makeUserMessage(proseText)] }
+
+      await hook["experimental.chat.messages.transform"]({}, output)
+
+      expect(fetchCalled).toBe(true)
+      expect((output.messages[0].parts[0] as { text: string }).text).toBe("COMPRESSED_EN")
+    } finally {
+      globalThis.fetch = originalFetch
+      delete process.env["GOOGLE_API_KEY"]
+    }
   })
 })
