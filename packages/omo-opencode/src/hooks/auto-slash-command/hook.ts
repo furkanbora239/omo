@@ -244,10 +244,13 @@ export function createAutoSlashCommandHook(options?: AutoSlashCommandHookOptions
         return
       }
 
-      const finalText = [preservedProse, ...taggedTemplates]
-        .filter((part) => part.length > 0)
-        .join("\n\n")
-      output.parts[idx].text = finalText
+      const templateText = taggedTemplates.join("\n\n")
+      if (preservedProse.length > 0) {
+        output.parts[idx].text = preservedProse
+        output.parts.splice(idx + 1, 0, { type: "text", text: templateText })
+      } else {
+        output.parts[idx].text = templateText
+      }
 
       log(`[auto-slash-command] Replaced message with command templates`, {
         sessionID: input.sessionID,

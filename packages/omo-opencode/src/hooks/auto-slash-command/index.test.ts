@@ -12,6 +12,10 @@ import type {
   CommandExecuteBeforeInput,
   CommandExecuteBeforeOutput,
 } from "./types"
+import {
+  AUTO_SLASH_COMMAND_TAG_CLOSE,
+  AUTO_SLASH_COMMAND_TAG_OPEN,
+} from "./constants"
 
 type AutoSlashCommandModule = typeof import("./hook")
 
@@ -575,10 +579,11 @@ describe("createAutoSlashCommandHook", () => {
       // when hook processes the message
       await hook["chat.message"](input, output)
 
-      // then prose is preserved and the command template is appended
+      // then prose stays in its own part and the command template lands in a separate part
       expect(output.parts[0].text).toContain("read the file first")
-      expect(output.parts[0].text).toContain("<auto-slash-command>")
-      expect(output.parts[0].text).toContain("/git-master Command")
+      const templatePart = output.parts.find((part) => part.text?.includes("<auto-slash-command>"))
+      expect(templatePart).toBeDefined()
+      expect(templatePart?.text).toContain("/git-master Command")
     })
 
     it("expands multiple known commands in order", async () => {
@@ -592,7 +597,7 @@ describe("createAutoSlashCommandHook", () => {
       await hook["chat.message"](input, output)
 
       // then both templates are present in order with prose preserved
-      const text = output.parts[0].text ?? ""
+      const text = output.parts.map((part) => part.text ?? "").join("\n")
       expect(text).toContain("implement X")
       expect(text).toContain("/review-work Command")
       expect(text).toContain("/opencode-qa Command")
@@ -613,7 +618,7 @@ describe("createAutoSlashCommandHook", () => {
       await hook["chat.message"](input, output)
 
       // then both skill templates are present in order
-      const text = output.parts[0].text ?? ""
+      const text = output.parts.map((part) => part.text ?? "").join("\n")
       expect(text).toContain("do ")
       expect(text).toContain("/alpha-skill Command")
       expect(text).toContain("Alpha skill template content")
@@ -650,6 +655,87 @@ describe("createAutoSlashCommandHook", () => {
 
       // then the message is unchanged
       expect(output.parts[0].text).toBe(originalText)
+    })
+
+    it("splits preserved prose and tagged templates into separate parts", async () => {
+      // given prose followed by a known command
+      const hook = createAutoSlashCommandHook()
+      const sessionID = `test-session-split-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const prompt = "please check the diff /git-master"
+      const output = createMockOutput(prompt)
+
+      // when hook processes the message
+      await hook["chat.message"](input, output)
+
+      // then the prose part and the template part are distinct
+      const prose = prompt.slice(0, prompt.indexOf("/git-master"))
+      expect(output.parts).toHaveLength(2)
+      expect(output.parts[0].text).toBe(prose)
+      expect(output.parts[0].text).not.toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
+      expect(output.parts[1].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
+      expect(output.parts[1].text).toContain(AUTO_SLASH_COMMAND_TAG_CLOSE)
+    })
+
+    it("emits a single template part when the prompt starts with the command", async () => {
+      // given a prompt that is only a known command
+      const hook = createAutoSlashCommandHook()
+      const sessionID = `test-session-pure-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const output = createMockOutput("/git-master fix the flaky test")
+
+      // when hook processes the message
+      await hook["chat.message"](input, output)
+
+      // then only one non-empty tagged part exists
+      expect(output.parts).toHaveLength(1)
+      expect(output.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
+      expect(output.parts[0].text).toContain(AUTO_SLASH_COMMAND_TAG_CLOSE)
+      expect(output.parts.every((part) => (part.text ?? "").length > 0)).toBe(true)
+    })
+
+    it("leaves parts unchanged when prose precedes an unknown command", async () => {
+      // given prose and a command that is not known
+      const hook = createAutoSlashCommandHook()
+      const sessionID = `test-session-prose-unknown-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const output = createMockOutput("hey there /definitely-not-real-xyz run it")
+      const originalText = output.parts[0].text
+
+      // when hook processes the message
+      await hook["chat.message"](input, output)
+
+      // then parts fall through untouched
+      expect(output.parts).toHaveLength(1)
+      expect(output.parts[0].text).toBe(originalText)
+    })
+
+    it("leaves parts unchanged when a known command yields no template", async () => {
+      // given a skill restricted to another agent
+      const restrictedSkill: LoadedSkill = {
+        name: "agent-locked-skill",
+        path: "/test/skills/agent-locked-skill/SKILL.md",
+        definition: {
+          name: "agent-locked-skill",
+          description: "Restricted to another agent",
+          template: "Agent locked template content",
+          agent: "some-other-agent",
+        },
+        scope: "user",
+      }
+      const hook = createAutoSlashCommandHook({ skills: [restrictedSkill] })
+      const sessionID = `test-session-agent-locked-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const output = createMockOutput("please run /agent-locked-skill now")
+      const originalText = output.parts[0].text
+
+      // when hook processes the message
+      await hook["chat.message"](input, output)
+
+      // then no template part is emitted and parts are unchanged
+      expect(output.parts).toHaveLength(1)
+      expect(output.parts[0].text).toBe(originalText)
+      expect(output.parts[0].text).not.toContain(AUTO_SLASH_COMMAND_TAG_OPEN)
     })
   })
 })
